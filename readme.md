@@ -1,10 +1,19 @@
 # CV Backbones 
-including GhostNet, TinyNet, TNT (Transformer in Transformer) developed by Huawei Noah's Ark Lab.
+Author:ZhangZhe,Southwest University,Chongqing
+
+We join gram matrix to enhance the relation between feature maps.
+
+And in order to squeeze the efficient net v2,we introduced GhostModule replaced the Conv.
+
+This directory include items :
+- [GhostNet_Effiv2] Gram matrix
 - [GhostNet Code](#ghostnet-code)
 - [TinyNet Code](#tinynet-code)
 - [TNT Code](#tnt-code)
 - [Citation](#citation)
 - [Other versions](#other-versions)
+
+GhostNet,TinyNet,TNT(Transformer in Transformer) developed by Huawei Noah's Ark Lab
 
 **News** 
 
