@@ -1,15 +1,12 @@
-#这个文件是作者的模型文件，#Gram Matrix能够反映该组向量中，各个向量之间的某种关系，self用来指向类的实例对象，而不是类本身
-#tf.keras.layers.Layer是一个可调用对象，以张量作为输入和输出，计算方法定义在call()里，官方建议定义__init__()，build(self,input_hape)
-#call(),get_config()
+#此程序用来配置GhostEfficientNetV2的
 import tensorflow as tf
-from grim_sum_model_train import VisionTransformer
-import tensorflow_addons as tfa
-from tensorflow.keras.callbacks import TensorBoard
-import matplotlib.pyplot as plt
+import Grim_GhostEffiNet as gge
 import numpy as np
+import tensorflow_addons as tfa
+import matplotlib.pyplot as plt
 import pandas as pd
 #---------------------------------设置的超参数-----------------------------------
-data_path = r'./Datasets/archive/fer2013.csv'
+data_path = r'../../Datasets/archive/fer2013.csv'
 emotions = {'0':'anger','1':'disgust','2':'fear','3':'happy','4':'sad','5':'surprised','6':'nomral'}
 logdir = 'logs'
 image_size = 48
@@ -20,7 +17,7 @@ num_heads = 8
 mlp_dim = 128
 lr = 3e-4
 weight_decay = 1e-4
-batch_size = 3
+batch_size = 3 #batch设置2的幂次对GPU表现更优，batch_size通常在几十到几百
 epochs = 50
 num_classes = 7
 dropout = 0.1
@@ -39,7 +36,7 @@ fer_pixels = np.asarray(fer_pixels)
 # 将特征转换成模型需要的类型
 fer_train = []
 for i in range(len(fer_label)):
-    pixels_new = np.asarray([float(p) for p in fer_pixels[i][0].split()]).reshape(48, 48, 1)
+    pixels_new = np.asarray([float(p) for p in fer_pixels[i][0].split()]).reshape(48,48,1)
     fer_train.append(pixels_new)
 fer_train = np.asarray(fer_train)
 fer_label = np.asarray(fer_label)
@@ -47,7 +44,7 @@ fer_label = np.asarray(fer_label)
 dataset = tf.data.Dataset.from_tensor_slices((fer_train, fer_label))
 
 #数据集验证集测试集的拆分
-train_dataset = dataset.take(20)
+train_dataset = dataset.take(200)
 test_dataset = dataset.skip(32297)
 
 #shuffle操作
@@ -57,28 +54,44 @@ strategy = tf.distribute.MirroredStrategy()
 #模型构建
 print("----------------building model---------------------------")
 with strategy.scope():  # 创建一个上下文管理器，能够使用当前的训练策略
-    model = VisionTransformer(
-        image_size=image_size,
-        patch_size=patch_size,
-        num_layers=num_layers,
-        num_classes=num_classes,  # 类别的数量
-        d_model=d_model,  # 64
-        num_heads=num_heads,
-        mlp_dim=mlp_dim,
-        channels=image_channel,
-        dropout=dropout,
-    )
+    model = gge.EfficientNetV2_S(num_classes=7,activation='relu',width_mult=1.0,depth_mult=1.0,
+                                conv_dropout_rate=None,dropout_rate=None,drop_connect=None)
     # 用于配置训练方法，告知训练器使用的优化器，损失函数和准确率评测标准
     model.compile(
         # 交叉熵损失函数，from_logits=True会将结果转换成概率(softmax)，
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
         optimizer=tfa.optimizers.AdamW(learning_rate=lr, weight_decay=weight_decay),
         # 网络评价指标，如accuracy,sparse_accuracy,sparse_categorical_accuracy
         metrics=["accuracy"],)
 
+    # 模型断点续训
+    checkpoint_filepath = '/tmp/checkpoint' #断点文件保存路径
+    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath,
+                                                  save_weights_only=True,
+                                                  monitor='val_accuracy',
+                                                  model='max',
+                                                  save_best_only=True)
+
     #最小二乘拟合
     print("-------------------start fitting-----------------------------")
     history = model.fit(
-        x =train_dataset,
-        epochs=50,
-        callbacks=[TensorBoard(log_dir=logdir, profile_batch=0),],)
+        x =train_dataset,shuffle=True,
+        epochs=50)
+
+    model.load_weights(checkpoint_filepath)
+
+    model.summary()
+
+plt.subplot(2,1,1)
+plt.plot(history.history['accuracy'])
+plt.title('Model accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+
+plt.subplot(2,1,2)
+plt.plot(history.history['loss'])
+plt.title('Model loss')
+plt.ylabel('loss')
+plt.xlabel('Epoch')
+
+plt.show()

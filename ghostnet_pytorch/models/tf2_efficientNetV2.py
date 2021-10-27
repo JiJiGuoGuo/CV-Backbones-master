@@ -237,7 +237,7 @@ def MBConv(inputs, output_channel, stride, expand_ratio, shortcut, survival=None
 
 
 def EfficientNetV2(
-    model_type,
+    model_type,#s,m,l
     input_shape=(None, None, 3),
     num_classes=1000,
     dropout=0.2,

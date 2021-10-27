@@ -1,12 +1,5 @@
 import tensorflow as tf
 import math
-def round_filter(filters,multiplier=1.0):
-    divisor = 8
-    min_depth = 8
-    filters = filters * multiplier
-    new_filters = max(min_depth,int(filters + divisor/2)//divisor * divisor)
-    return new_filters
-
 
 def hard_swish(x, inplace: bool = False):
     '''
@@ -144,10 +137,10 @@ class GhostModule(tf.keras.layers.Layer):
         #第0,1,2维全选，最后一维度从0开始读取到self.oup，步长为1，左闭右开
         return out[...,:self.ouput_channel]
 
-class Ghost_Fused_MBConv(tf.keras.layers.Layer):
+class Fused_MBConv(tf.keras.layers.Layer):
     def __init__(self,input_channels,output_channels,kernel_size,activation='swish',
-                 stride=1,expand_ratio=6,se_ratio=4,dropout=None,shortcut = 1,survival=None):
-        super(Ghost_Fused_MBConv, self).__init__()
+                 stride=1,expand_ratio=6,se_ratio=4,dropout=None,shortcut = 1,survival=None,epsilon=1e-5):
+        super(Fused_MBConv, self).__init__()
         self.expand_ratio = expand_ratio
         self.drop = dropout
         self.se_ratio = se_ratio
@@ -161,14 +154,15 @@ class Ghost_Fused_MBConv(tf.keras.layers.Layer):
         if stride == 2:
             self.poolAvage = tf.keras.layers.AveragePooling2D()
         if input_channels != output_channels:
-            self.shortcut = GhostModule(output_channels,kernel_size=1,stride=1)
+            self.shortcut = tf.keras.layers.Conv2D(output_channels,kernel_size=1,strides=1,padding='same',use_bias = False)
 
         #升维阶段，卷积
         if expand_ratio != 1:
-            self.ghost1 = GhostModule(expand_ratio_filters,
-                                      kernel_size=kernel_size,stride=stride,ratio=2,dw_size=3,use_relu=True)
-            self.ghost1_bn = tf.keras.layers.BatchNormalization(epsilon=1e-5)
-            self.ghost1_act = tf.keras.layers.Activation(activation)
+            self.conv3x3_fused = tf.keras.Sequential([
+                tf.keras.layers.Conv2D(expand_ratio_filters,kernel_size=kernel_size,strides=stride,padding='same',use_bias=False),
+                tf.keras.layers.BatchNormalization(epsilon=epsilon),
+                tf.keras.layers.Activation(activation),
+            ])
             if (dropout is not None) and (dropout != 0):
                 self.ghost1_dropout = tf.keras.layers.Dropout(dropout)
 
@@ -177,9 +171,12 @@ class Ghost_Fused_MBConv(tf.keras.layers.Layer):
             self.se = SE(expand_ratio_filters, se_ratio)
 
         #输出阶段，降维阶段，卷积
-        self.ghost2 = GhostModule(output_channels,kernel_size=1 if expand_ratio != 1 else kernel_size,
-                                  stride=1 if expand_ratio != 1 else stride,use_relu=True)
-        self.out_bn = tf.keras.layers.BatchNormalization(epsilon=1e-5)
+        self.conv1x1 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(output_channels,kernel_size=1 if expand_ratio != 1 else kernel_size,
+                                   strides=1 if expand_ratio != 1 else stride,padding='same',
+                                   use_bias=False),
+            tf.keras.layers.BatchNormalization(epsilon=epsilon),
+        ])
 
     def call(self,inputs):
         shortcut = inputs
@@ -189,17 +186,14 @@ class Ghost_Fused_MBConv(tf.keras.layers.Layer):
             shortcut = self.shortcut(shortcut)
         #升维
         if self.expand_ratio != 1:
-            inputs = self.ghost1(inputs)
-            inputs = self.ghost1_bn(inputs)
-            inputs = self.ghost1_act(inputs)
+            inputs = self.conv3x3_fused(inputs)
             if (self.drop is not None) and (self.drop != 0):
                 inputs = self.ghost1_dropout(inputs)
         #SE模块
         if self.se_ratio is not None:
             inputs = self.se(inputs)
-
-        inputs = self.ghost2(inputs)
-        inputs = self.out_bn(inputs)
+        #输出阶段，降维1x1
+        inputs = self.conv1x1(inputs)
 
         if self.use_shortcut:#如果使用直连/残差结构
             if self.survival is not None and self.survival<1:#生存概率(随机深度残差网络论文中的术语，表示残差支路被激活的概率)
@@ -211,45 +205,50 @@ class Ghost_Fused_MBConv(tf.keras.layers.Layer):
         else:
             return inputs
 
-class Ghost_MBConv(tf.keras.layers.Layer):
+class MBConv(tf.keras.layers.Layer):
     def __init__(self,input_channels,output_channels,kernel_size,activation='swish',
-                 stride=1,expand_ratio=6,se_ratio=4,dropout=None,shortcut = 1,survival=None):
-        super(Ghost_MBConv, self).__init__()
+                 stride=1,expand_ratio=6,se_ratio=4,dropout=None,shortcut = 1,survival=None,epsilon=1e-5):
+        super(MBConv, self).__init__()
         expand_channels = expand_ratio * input_channels
         self.expand_ratio = expand_ratio
         self.dropout = dropout
-        self.se_ratio = se_ratio
         self.survival = survival
         self.use_shortcut = shortcut
         self.stride = stride
         self.input_channels = input_channels
         self.output_channels = output_channels
-
         self.has_se = (se_ratio is not None) and (0 < se_ratio <=1)#如果有se_ratio则表示要使用se模块
 
         if stride == 2:
             self.poolAvage = tf.keras.layers.AveragePooling2D()
         if input_channels != output_channels:
-            self.shortcut = GhostModule(output_channels,kernel_size=1,stride=1)
-        #conv1x1
-        if expand_ratio != 1:
-            self.ghost1 = GhostModule(expand_channels,kernel_size=1,ratio=2,dw_size=3,stride=1)
-            self.ghost1_bn = tf.keras.layers.BatchNormalization(epsilon=1e-5)
-            self.ghost1_act = tf.keras.layers.Activation(activation)
+            self.shortcut = tf.keras.layers.Conv2D(output_channels,kernel_size=1,strides=1,padding='same',use_bias = False)
+
+        #conv1x1升维
+        if expand_ratio != 1:#pytorch没有这个expand=1的判断，难道是1x1在输出=原始维度时，没有什么效果
+            self.conv1x1_up = tf.keras.Sequential([
+                tf.keras.layers.Conv2D(expand_channels,kernel_size=1,strides=1,padding='same',use_bias=False),
+                tf.keras.layers.BatchNormalization(epsilon=epsilon),
+                tf.keras.layers.Activation(activation),
+            ])
         #depthwise3x3
-        self.dethwise = tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size,strides=stride,
-                                                        padding='same',use_bias=False)
-        self.dethwise_bn = tf.keras.layers.BatchNormalization(epsilon=1e-5)
-        self.dethwise_act = tf.keras.layers.Activation(activation)
+        self.dethwise_conv = tf.keras.Sequential([
+            tf.keras.layers.DepthwiseConv2D(kernel_size=kernel_size,strides=stride,padding='same',use_bias=False),
+            tf.keras.layers.BatchNormalization(epsilon=epsilon),
+            tf.keras.layers.Activation(activation),
+        ])
+
         #是否dropout
         if (expand_ratio != 1) and (dropout is not None) and (dropout != 0):
             self.dropout = tf.keras.layers.Dropout(dropout)
         #SE模块
-        if self.se_ratio:
+        if self.has_se:
             self.se = SE(expand_channels, se_ratio)
-        #conv1x1
-        self.ghost2 = GhostModule(output_channels,kernel_size=1,stride=1)
-        self.ghost2_bn = tf.keras.layers.BatchNormalization(epsilon=1e-5)
+        #conv1x1降维
+        self.conv1x1_down = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(output_channels,kernel_size=1,strides=1,use_bias=False),
+            tf.keras.layers.BatchNormalization(epsilon=epsilon),
+        ])
 
     def call(self,inputs):
         shortcut = inputs
@@ -258,23 +257,19 @@ class Ghost_MBConv(tf.keras.layers.Layer):
         if self.input_channels != self.output_channels:
             shortcut = self.shortcut(shortcut)
 
-        if self.expand_ratio != 1:#conv1x1
-            inputs = self.ghost1(inputs)
-            inputs = self.ghost1_bn(inputs)
-            inputs = self.ghost1_act(inputs)
+        if self.expand_ratio != 1:#conv1x1升维
+            inputs = self.conv1x1_up(inputs)
         #depthwise3x3
-        inputs = self.dethwise(inputs)
-        inputs = self.dethwise_bn(inputs)
-        inputs = self.dethwise_act(inputs)
+        inputs = self.dethwise_conv(inputs)
         #dropout
         if (self.expand_ratio != 1) and (self.dropout is not None) and (self.dropout != 0):
             x = self.dropout(inputs)
         #se模块
-        if self.se_ratio is not None:
+        if self.has_se:
             inputs = self.se(inputs)
-        #conv1x1
-        inputs = self.ghost2(inputs)
-        inputs = self.ghost2_bn(inputs)
+        #conv1x1降维
+        inputs = self.conv1x1_down(inputs)
+
         #shortcut and stochastic Depth
         if self.use_shortcut:#如果使用直连/残差结构
             if self.survival is not None and self.survival<1:#生存概率(随机深度残差网络论文中的术语，表示残差支路被激活的概率)
@@ -285,6 +280,7 @@ class Ghost_MBConv(tf.keras.layers.Layer):
                 return tf.keras.layers.Add()([inputs,shortcut])
         else:
             return inputs
+
 
 class EfficientNetV2(tf.keras.Model):
     '''
@@ -303,8 +299,8 @@ class EfficientNetV2(tf.keras.Model):
         name: 层的名字
     Returns:a tf.keras model
     '''
-    def __init__(self,cfg,num_classes=1000,activation='swish',
-                 width_mult=1,depth_mult=1,conv_dropout_rate=None,dropout_rate=None,drop_connect=None,include_top=True,name=None):
+    def __init__(self,cfg,num_classes,activation,width_mult:float,depth_mult=float,
+                 conv_dropout_rate=None,dropout_rate=None,drop_connect=None,include_top=True,name=None,epsilon=1e-5):
         super(EfficientNetV2, self).__init__(name=name)
         self.dropout_rate = dropout_rate
         self.include_top = include_top
@@ -327,7 +323,7 @@ class EfficientNetV2(tf.keras.Model):
         #最终stage
         self.stage7_conv = tf.keras.Sequential([
             tf.keras.layers.Conv2D(_make_divisible(1280,width_mult),kernel_size=1,padding='same',use_bias=False),
-            tf.keras.layers.BatchNormalization(epsilon=1e-5),
+            tf.keras.layers.BatchNormalization(epsilon=epsilon),
             tf.keras.layers.Activation(activation),
         ])
         self.stage7_globalAverPool = tf.keras.layers.GlobalAveragePooling2D()
@@ -336,7 +332,7 @@ class EfficientNetV2(tf.keras.Model):
 
         self.stage7_classfier = tf.keras.Sequential([
             tf.keras.layers.Dense(num_classes),
-            tf.keras.layers.Activation('softmax'),
+            # tf.keras.layers.Activation('softmax'),
         ])
     def call(self,inputs):
         x = self.stage0_conv3(inputs)
@@ -367,35 +363,39 @@ def handleInputStageChannels(index,input_channels,output_channels,kernel_size,ac
     Returns:
     '''
     if use_Fused:
-        return Ghost_Fused_MBConv(input_channels = output_channels if index != 0 else input_channels,
+        return Fused_MBConv(input_channels = output_channels if index != 0 else input_channels,
                                   output_channels = output_channels,kernel_size=kernel_size,activation=activation,
                                   stride = 1 if index != 0 else stride,
                                   expand_ratio = expand_ratio,se_ratio=se_ratio,dropout=dropout,shortcut=shortcut,survival=survival)
     elif not use_Fused:
-        return Ghost_MBConv(input_channels = output_channels if index != 0 else input_channels,
+        return MBConv(input_channels = output_channels if index != 0 else input_channels,
                                   output_channels = output_channels,kernel_size=kernel_size,activation=activation,
                                   stride = 1 if index != 0 else stride,
                                   expand_ratio = expand_ratio,se_ratio=se_ratio,dropout=dropout,shortcut=shortcut,survival=survival)
-def s(inputs,num_class=1000,activation='swish',width_mult=1,depth_mult=1,conv_dropout_rate=None,dropout_rate=None,drop_connect=0.2):
-    '''
-    EfficientV2_S 使用的配置文件
-    Returns:配置好的模型
-    '''
-    #计数：该stage重复多少次；扩展比例：MBConv第一个卷积将输入通道扩展成几倍(1,4,6)；SE率：SE模块中第一个FC/Conv层将其缩放到多少，通常是1/4
-    #次数0，卷积核大小1，步长2，扩展比例3，输入通道数4，输出通道数5，是否Fused6，SE率7，是否shortcut8,生存概率9
-    #   0,  1  2, 3  4   5   6       7   8  9
-    cfg = [
-        [2, 3, 1, 1, 24, 24, True, None,1,0.5],#stage 1
-        [4, 3, 2, 4, 24, 48, True, None,1,0.5],#stage 2
-        [4, 3, 2, 4, 48, 64, True, None,1,0.5],#stage 3
-        [6, 3, 2, 4, 64, 128, False, 4,1,0.5],#stage 4
-        [9, 3, 1, 6, 128, 160, False, 4,1,0.5],#stage 5
-        [15, 3, 2, 6, 160, 256, False, 4,1,0.5],#stage 6
-    ]
-    effivientV2 = EfficientNetV2(cfg)
-    return effivientV2(inputs)
+
+
+class EfficientNetV2_S(tf.keras.Model):
+    def __init__(self,num_classes,activation='swish',width_mult=1.0,depth_mult=1.0,conv_dropout_rate=None,dropout_rate=None,drop_connect=0.2):
+        super(EfficientNetV2_S, self).__init__()
+        # 计数：该stage重复多少次；扩展比例：MBConv第一个卷积将输入通道扩展成几倍(1,4,6)；SE率：SE模块中第一个FC/Conv层将其缩放到多少，通常是1/4
+        # 次数0，卷积核大小1，步长2，扩展比例3，输入通道数4，输出通道数5，是否Fused6，SE率7，是否shortcut8,生存概率9
+        #   0,  1  2, 3  4   5   6       7   8  9
+        cfg = [
+            [2, 3, 1, 1, 24, 24, True, None, 1, 0.5],  # stage 1
+            [4, 3, 2, 4, 24, 48, True, None, 1, 0.5],  # stage 2
+            [4, 3, 2, 4, 48, 64, True, None, 1, 0.5],  # stage 3
+            [6, 3, 2, 4, 64, 128, False, 4, 1, 0.5],  # stage 4
+            [9, 3, 1, 6, 128, 160, False, 4, 1, 0.5],  # stage 5
+            [15, 3, 2, 6, 160, 256, False, 4, 1, 0.5],  # stage 6
+        ]
+        self.efficientV2 = EfficientNetV2(cfg,num_classes=num_classes,activation=activation,
+                                          width_mult=width_mult,depth_mult=depth_mult,
+                                          conv_dropout_rate=None,dropout_rate=None,drop_connect=None)
+    def call(self,inputs):
+        return self.efficientV2(inputs)
 
 if __name__ == '__main__':
     x = tf.random.uniform([3,224,224,3])
-    model = s(x,1000)
-    print(model)
+    model = EfficientNetV2_S(7)
+    model(x)
+    model.summary()

@@ -9,9 +9,6 @@ https://github.com/google/automl/tree/master/efficientnetv2
 
 
 def round_filters(filters, multiplier=1.):
-    '''
-    确保filters能被8整除，如果不能则返回靠近能够被8整除的数字
-    '''
     divisor = 8
     min_depth = 8
     filters *= multiplier
@@ -25,50 +22,24 @@ def round_repeats(repeats, multiplier=1.):
 
 
 def squeeze_and_excite(x, in_channels, out_channels, activation, reduction_ratio=4):
-    '''
-    这个函数用来将输入的x张量，转换成out_channels，第一个FC将会将输入channels缩放，缩放倍数是reducton_ratio
-    '''
-    x = layers.GlobalAvgPool2D()(x) #全局平均池化
-    x = layers.Dense(in_channels // reduction_ratio)(x) #第一个FC将输出压缩成输入的1/4
-    x = layers.Activation(activation)(x) #激活函数，swish或relu
-    x = layers.Dense(out_channels)(x) #再一个FC
-    x = layers.Activation(activations.sigmoid)(x) #激活函数，sigmoid或者relu
+    x = layers.GlobalAvgPool2D()(x)
+    x = layers.Dense(in_channels // reduction_ratio)(x)
+    x = layers.Activation(activation)(x)
+    x = layers.Dense(out_channels)(x)
+    x = layers.Activation(activations.sigmoid)(x)
     return x
 
 def ghost_conv(x, out_channels, kernel_size, stride, kernel_regularizer=None):
-    '''
-    官方的ghostmodule是两段处理一个origin，一个cheap
-    Args:
-        x:
-        out_channels:
-        kernel_size:
-        stride:
-        kernel_regularizer:
-    Returns:
-    '''
-    x1 = layers.Conv2D(out_channels // 2, kernel_size=kernel_size, strides=stride, padding="same",use_bias=False, kernel_regularizer=kernel_regularizer)(x)
+    x1 = layers.Conv2D(out_channels // 2, kernel_size=kernel_size, strides=stride, padding="same",
+                       use_bias=False, kernel_regularizer=kernel_regularizer)(x)
     x2 = layers.BatchNormalization(epsilon=1e-5)(x1)
-    x2 = layers.Activation(activations.relu)(x2)
-    x2 = layers.DepthwiseConv2D(kernel_size=(3, 3), strides=1, padding="same",use_bias=False, kernel_regularizer=kernel_regularizer)(x2)
+    x2 = layers.Activation(activations.elu)(x2)
+    x2 = layers.DepthwiseConv2D(kernel_size=(3, 3), strides=1, padding="same",
+                                use_bias=False, kernel_regularizer=kernel_regularizer)(x2)
     return layers.Concatenate()([x1, x2])
 
 def fused_mbconv(x, in_channels, out_channels, kernel_size, activation, stride=1, reduction_ratio=4,
                  expansion=6, dropout=None, drop_connect=.2):
-    '''
-    Args:
-        x:
-        in_channels:输入张量通道数
-        out_channels:输出张量通道数
-        kernel_size:除1x1之外其他的卷积核大小
-        activation:
-        stride:
-        reduction_ratio:
-        expansion: 第一个Conv会将输入inputs的channel扩展到几倍
-        dropout:
-        drop_connect:
-    Returns:
-
-    '''
     shortcut = x
     expanded = round_filters(in_channels * expansion)
 

@@ -35,7 +35,7 @@ def _make_divisible(v, divisor:int=8, min_value=None):
     return new_v
 
 class SE(tf.keras.layers.Layer):
-    def __init__(self,inputs_channels:int,se_ratio:int = 4,name:str=""):
+    def __init__(self,inputs_channels:int,se_ratio:int = 0.25,name:str=""):
         '''
         这个函数是使用Conv1x1实现的SE模块，并使用reduc_mean实现GlobalAveragePooling
         Args:
@@ -47,7 +47,7 @@ class SE(tf.keras.layers.Layer):
         super(SE,self).__init__()
         self.se_ratio = se_ratio
         self.filters = inputs_channels
-        self.reduction = _make_divisible(inputs_channels / se_ratio,8)
+        self.reduction = _make_divisible(inputs_channels * se_ratio,8)
         #第一个FC将输入SE的channel压缩成1/4
         self.global_pool = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_last')
         self.conv1 = tf.keras.layers.Conv2D(self.reduction,1,1,use_bias=True,name=name+'1_conv')
@@ -124,8 +124,8 @@ class GhostModule(tf.keras.layers.Layer):
 
         self.cheap_operation = tf.keras.Sequential([
             #group用于对channel进行分组，默认是一个channel为一组,这里采用的是分组卷积
-            # tf.keras.layers.Conv2D(new_channels,3,1,'same',use_bias=False,groups=init_channels),
-            tf.keras.layers.DepthwiseConv2D(3,1,'same',use_bias=False),
+            tf.keras.layers.Conv2D(new_channels,3,1,'same',use_bias=False,groups=init_channels),
+            # tf.keras.layers.DepthwiseConv2D(3,1,'same',use_bias=False),
             tf.keras.layers.BatchNormalization(epsilon=1e-5),
             tf.keras.layers.Activation(activation='relu') if use_relu else tf.keras.Sequential(),
         ])
@@ -361,6 +361,8 @@ class Ghost_MBConv(tf.keras.layers.Layer):
         self.input_channels = input_channels
         self.output_channels = output_channels
 
+        self.has_se = (se_ratio is not None) and (0 < se_ratio <=1)#如果有se_ratio则表示要使用se模块
+
         if stride == 2:
             self.poolAvage = tf.keras.layers.AveragePooling2D()
         if input_channels != output_channels:
@@ -379,7 +381,7 @@ class Ghost_MBConv(tf.keras.layers.Layer):
         if (expand_ratio != 1) and (dropout is not None) and (dropout != 0):
             self.dropout = tf.keras.layers.Dropout(dropout)
         #SE模块
-        if se_ratio is not None:
+        if self.se_ratio:
             self.se = SE(expand_channels, se_ratio)
         #conv1x1
         self.ghost2 = GhostModule(output_channels,kernel_size=1,stride=1)
@@ -436,12 +438,15 @@ class EfficientNetV2(tf.keras.Model):
         conv_dropout_rate: 在MBConv/Stage后的drop的概率，0或none代表不使用dropout
         dropout_rate: 在GlobalAveragePooling后的drop概率，0或none代表不使用dropout
         drop_connect: 在跳层连接drop概率，0或none代表不使用dropout
+        include_top: 是否包含分类用的最顶层
+        name: 层的名字
     Returns:a tf.keras model
     '''
-    def __init__(self,cfg,num_classes=1000,input=None,activation='swish',
-                 width_mult=1,depth_mult=1,conv_dropout_rate=None,dropout_rate=None,drop_connect=None):
-        super(EfficientNetV2, self).__init__()
+    def __init__(self,cfg,num_classes=1000,activation='swish',
+                 width_mult=1,depth_mult=1,conv_dropout_rate=None,dropout_rate=None,drop_connect=None,include_top=True,name=None):
+        super(EfficientNetV2, self).__init__(name=name)
         self.dropout_rate = dropout_rate
+        self.include_top = include_top
         #stage 0
         self.stage0_conv3 = tf.keras.Sequential([
             tf.keras.layers.Conv2D(24,kernel_size=3,strides=2,padding='same',use_bias=False),

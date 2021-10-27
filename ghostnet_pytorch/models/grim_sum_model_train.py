@@ -190,7 +190,7 @@ class VisionTransformer(tf.keras.Model):
         '''
         batch_size = tf.shape(x)[0]
         x = self.rescale(x)
-        # x = self.get_grim_top_right(x)
+        x = self.get_grim_top_right(x)
         patches = self.extract_patches(x)
         x = self.patch_proj(patches)
         print("输入到第一个Dense，rescaling之后 x shape{}".format(x.shape))
@@ -216,33 +216,31 @@ class VisionTransformer(tf.keras.Model):
         return x
 
 
-    # def get_grim_top_right(self, matrix):
-    #     '''
-    #     求一个矩阵的右上角元素矩阵
-    #     :param matrix: 传入一个numpy，类型为[batch,height*width,channel]
-    #     :return: 返回右上角元素组成的numpy数组. [[1,2,3,4...]]
-    #     '''
-    #     batch_size = tf.shape(x)[0]
-    #     # 这里需要变成[batch,height*width,channel]
-    #     matrix = np.array(matrix)
-    #     features = []
-    #     for index in range(batch_size):
-    #         gram_matrix = np.dot(matrix[index].T, matrix[index])
-    #         feature = []
-    #         gram_len = gram_matrix.shape[1]
-    #         for row in range(gram_len):
-    #             tem_row = []
-    #             for clo in range(gram_len):
-    #                 clos = clo + row
-    #                 if (clos > gram_len - 1):
-    #                     break
-    #                 tem_row.append(gram_matrix[row][row + clo])
-    #             #             print(tem_row)
-    #             feature.append(tem_row)
-    #         features.append(feature)
-    #     return np.array(features)
-
-
+    def get_grim_top_right(self, matrix):
+        '''
+        求一个矩阵的右上角元素矩阵
+        :param matrix: 传入一个numpy，类型为[batch,height*width,channel]
+        :return: 返回右上角元素组成的numpy数组. [[1,2,3,4...]]
+        '''
+        batch_size = tf.shape(matrix)[0]
+        # 这里需要变成[batch,height*width,channel]
+        matrix = np.array(matrix)
+        features = []
+        for index in range(batch_size):
+            gram_matrix = np.dot(matrix[index].T, matrix[index])
+            feature = []
+            gram_len = gram_matrix.shape[1]
+            for row in range(gram_len):
+                tem_row = []
+                for clo in range(gram_len):
+                    clos = clo + row
+                    if (clos > gram_len - 1):
+                        break
+                    tem_row.append(gram_matrix[row][row + clo])
+                #             print(tem_row)
+                feature.append(tem_row)
+            features.append(feature)
+        return np.array(features)
 
 # #---------------------其他参数-------------------------
 # data_path = r'/vision-transformer/Datasets/archive/fer2013.csv'

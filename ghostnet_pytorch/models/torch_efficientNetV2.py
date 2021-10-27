@@ -62,6 +62,9 @@ class SELayer(nn.Module):
 
 
 def conv_3x3_bn(inp, oup, stride):
+    '''
+    conv，bn，relu
+    '''
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
         nn.BatchNorm2d(oup),
@@ -84,7 +87,7 @@ class MBConv(nn.Module):
 
         hidden_dim = round(inp * expand_ratio)#四舍五入一个数字到给定精度
         self.identity = stride == 1 and inp == oup
-        if use_se:
+        if use_se:#使用SE模块
             self.conv = nn.Sequential(
                 # pw
                 nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
@@ -99,7 +102,7 @@ class MBConv(nn.Module):
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
             )
-        else:
+        else:#不使用SE模块
             self.conv = nn.Sequential(
                 # fused
                 nn.Conv2d(inp, hidden_dim, 3, stride, 1, bias=False),
