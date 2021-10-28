@@ -96,9 +96,9 @@ class SE(torch.nn.Module):
         # squeeze阶段
         self.globalAveragePool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
         # excitation阶段，第一个FC/Conv将输入通道压缩se_ratio倍
-        self.conv1 = torch.nn.Conv2d(in_channel, self.reduction, kernel_size=1, stride=1, bias=True)
+        self.conv1 = torch.nn.Conv2d(in_channel, self.reduction, kernel_size=1, stride=1,padding='same',bias=True)
         self.fc1_act = torch.nn.ReLU()
-        self.conv2 = torch.nn.Conv2d(self.reduction, out_channel, 1, 1, bias=True)
+        self.conv2 = torch.nn.Conv2d(self.reduction, out_channel, 1, 1,padding='same', bias=True)
         self.fc2_act = torch.nn.ReLU()
 
     def forward(self, inputs):
@@ -134,13 +134,13 @@ class GhostModule(torch.nn.Module):
         # 常规卷积分成了两部分
         self.primary_conv = torch.nn.Sequential(
             # 点卷积的卷积核的组数 = 上一层的channel数，大小为1x1xM，M=input.shape(1)
-            torch.nn.Conv2d(in_channel, self.init_channel, kernel_size, stride),
+            torch.nn.Conv2d(in_channel, self.init_channel, kernel_size, stride,padding='same',bias=False),
             torch.nn.BatchNorm2d(self.init_channel),
             torch.nn.ELU(),  # 可以换成ReLU
         )
         self.cheap_operation = torch.nn.Sequential(
             # group对channel进行分组，默认是，一个channel为一组，这里采用的是分组卷积
-            torch.nn.Conv2d(self.init_channel, out_channel, 3, 1, groups=self.init_channel)
+            torch.nn.Conv2d(self.init_channel, out_channel, 3, 1, groups=self.init_channel,padding='same',bias=False)
         )
 
     def forward(self, input):
@@ -240,7 +240,87 @@ class Ghost_MBConv(torch.nn.Module):
         #conv1x1
         if expand_ratio != 1:
             self.ghost1 = GhostModule(in_channel,self.expand_ratio_filter,kernel_size=1,stride=1,ratio=2)
-            self.ghost1_bn = torch.nn.BatchNorm2d(num_features=self.expand_ratio_filter)
+            self.ghost1_bn = torch.nn.BatchNorm2d(num_features=self.expand_ratio_filter,eps=epsilon)
+            self.ghost1_act = torch.nn.ReLU()
+        #depthwise conv3x3
+        self.depthwise = torch.nn.Conv2d(self.expand_ratio_filter,self.expand_ratio_filter,kernel_size,stride,padding='same',bias=False)
+        self.depthwise_bn = torch.nn.BatchNorm2d(self.expand_ratio_filter,eps=epsilon)
+        self.depthwise_act = torch.nn.ReLU()
+        #是否dropout
+        if (expand_ratio != 1) and (dropout is not None) and (dropout != 0):
+            self.dropout = torch.nn.Dropout(dropout)
+        #SE模块
+        if se_ratio is not None:
+            self.se = SE(self.expand_ratio_filter,self.expand_ratio_filter,se_ratio)
+
+        #conv1x1
+        self.ghost2 = GhostModule(in_channel,out_channel,kernel_size=1,stride=1,ratio=2)
+        self.ghost2_bn = torch.nn.BatchNorm2d(num_features=out_channel,eps=epsilon)
+
+    def forward(self,input):
+        shorcut = input
+        if self.stride == 2:
+            shorcut = self.poolAvrage(shorcut)
+        if self.in_channel != self.out_channel:
+            shorcut = self.shortcut(shorcut)
+        if self.expand_ratio != 1:#conv1x1
+            input = self.ghost1(input)
+            input = self.ghost1_bn(input)
+            input = self.ghost1_act(input)
+        #depthwise conv
+        input = self.depthwise(input)
+        input = self.depthwise_bn(input)
+        input = self.depthwise_act(input)
+        #dropout
+        if (self.expand_ratio != 1) and (self.dropout is not None) and (self.dropout != 0)
+            x = self.dropout(input)
+        #se模块
+        if self.se_ratio is not None:
+            input = self.se(input)
+        #conv1x1
+        input = self.ghost2(input)
+        input = self.ghost2_bn(input)
+        #short and stochastic depth
+        if self.use_shortcut:#如果使用直连结构
+            if self.survival is not None and self.survival<1:#生存概率，随机深度残差网络论文中的术语，表示残差之路被激活的概率
+                from torchvision.ops import StochasticDepth
+                stoDepth = StochasticDepth(p=self.survival)
+                return stoDepth([shorcut,input])
+            else:
+                return torch.add(shorcut,input)
+        else:
+            return input
+
+class EfficientNetV2(torch.nn.Module):
+    '''
+    根据EfficientNetV2论文重新实现的EfficientNet-V2-s和官方代码
+    Args:
+        cfg: stages的配置
+        num_classes: 类别数量，也是最终的输出channels
+        input: 输入的张量, 若提供了则忽略in_shape
+        activation: 通过隐藏层的激活函数
+        width_mult: 模型宽度因子, 默认为1
+        depth_mult: 模型深度因子,默认为1
+        conv_dropout_rate: 在MBConv/Stage后的drop的概率，0或none代表不使用dropout
+        dropout_rate: 在GlobalAveragePooling后的drop概率，0或none代表不使用dropout
+        drop_connect: 在跳层连接drop概率，0或none代表不使用dropout
+    Returns:a tf.keras model
+    '''
+    def __init__(self,configuration,num_class:float,width_mult:float,depth_mult:float,
+                 conv_dropout_rate=None,dropout_rate=None,drop_connect=None,epsilon=1e-5):
+        super(EfficientNetV2,self).__init__()
+        self.dropout_rate = dropout_rate
+        #stage0
+        self.stage0_conv3 = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=3,out_channels=24,kernel_size=3,stride=2,padding='same',bias=False),
+            torch.nn.BatchNorm2d(num_features=24),
+            torch.nn.ReLU(),
+        )
+        self.stage7_globalAverPool = torch.nn.AdaptiveAvgPool2d()
+
+
+
+
 
 
 
