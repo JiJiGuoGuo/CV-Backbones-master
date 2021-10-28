@@ -64,7 +64,7 @@ def hard_swish(x, inplace: bool = False):
     else:
         return (tf.nn.relu6(x + 3.) * x)/ 6.
 
-def hard_sigmoid():
+def hard_sigmoid(x):
     '''
     hard_sigmoid是Logistic sigmoid的分段近似函数，更易于计算，学习速率加快
     if x<-2.5,return 0
@@ -72,7 +72,7 @@ def hard_sigmoid():
     if -2.5<=x<=2.5,return 0.2*x+0.5
     tensorflow2已经实现了hard_sigmoid
     '''
-    return tf.keras.activations.hard_sigmoid()
+    return torch.nn.functional.hardsigmoid(x)
 
 def round_filter(filters,multiplier=1.0):
     divisor = 8
@@ -232,12 +232,16 @@ class Ghost_MBConv(torch.nn.Module):
         self.use_shortcut = shortcut
         self.survival = survival
 
+        # 矫正通道
         if stride == 2:
-            # 矫正通道
-            if stride == 2:
-                self.poolAvrage = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-            if in_channel != out_channel:
-                self.shortcut = GhostModule(in_channel, out_channel, kernel_size=1, stride=1)
+            self.poolAvrage = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+        if in_channel != out_channel:
+            self.shortcut = GhostModule(in_channel, out_channel, kernel_size=1, stride=1)
+        #conv1x1
+        if expand_ratio != 1:
+            self.ghost1 = GhostModule(in_channel,self.expand_ratio_filter,kernel_size=1,stride=1,ratio=2)
+            self.ghost1_bn = torch.nn.BatchNorm2d(num_features=self.expand_ratio_filter)
+
 
 
 #
